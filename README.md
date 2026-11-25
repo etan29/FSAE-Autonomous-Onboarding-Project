@@ -13,6 +13,10 @@ iteration 2:
 <img width="1049" height="602" alt="image" src="https://github.com/user-attachments/assets/0a268816-b9f6-4b60-8fb0-e256510b0aad" />
 
 iteration 3: 
+<img width="1061" height="647" alt="image" src="https://github.com/user-attachments/assets/e00eb846-ea69-4181-b6ca-649a59728f8b" />
+<img width="1051" height="613" alt="image" src="https://github.com/user-attachments/assets/78610b2c-18b0-4f44-83cd-53f91e8953e5" />
+<img width="1067" height="629" alt="image" src="https://github.com/user-attachments/assets/de38d850-b210-4b90-a2a4-81e11608353b" />
+<img width="1047" height="599" alt="image" src="https://github.com/user-attachments/assets/735f704b-bb2f-4801-af47-ec5cc7cd55fa" />
 
 
 end goal: 
