@@ -1,1 +1,2 @@
 ## Autonomous Onboarding: Procedural Generation in Blender
+Task: Build an automated Blender-based race track generator that can create different FSAE autonomous racing environments using a random seed. Develop a procedural generation system that creates tracks and backgrounds like tents, trees, and people to allow for greater variation in conditions. Use AI assisted development to generate the project and consider spec driven development. Optional: consider rules and regulations such as cone color, track length, track width, etc. Estimated time: 1.5 hours.
