@@ -1,0 +1,22 @@
+{
+  "id": "us_fsae_driverless_2025",
+  "name": "U.S. Formula SAE Driverless",
+  "revision": "2025 U.S. Formula SAE Driverless Supplement (values as stated in the project specification)",
+  "source_note": "Numeric limits below are the project specification's reading of the 2025 U.S. Formula SAE Driverless Supplement. They are not applied to other competitions. Cone spacing is intentionally omitted: this profile does not treat the Formula Student 5 m rule as a universal requirement.",
+  "min_track_width_m": 3.0,
+  "min_turning_diameter_m": 9.0,
+  "max_straight_length_m": 80.0,
+  "target_lap_length_m": [200.0, 500.0],
+  "left_cone": "blue_small",
+  "right_cone": "yellow_small",
+  "entry_exit_cone": "orange_small",
+  "start_finish_cone": "orange_large",
+  "small_cone_base_m": 0.228,
+  "small_cone_height_m": 0.325,
+  "large_cone_base_m": 0.285,
+  "large_cone_height_m": 0.505,
+  "left_stripe": "white",
+  "right_stripe": "black",
+  "max_cone_spacing_m": null,
+  "enforce_corner_spacing": false
+}

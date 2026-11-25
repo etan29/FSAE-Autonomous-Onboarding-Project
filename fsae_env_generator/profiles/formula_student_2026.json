@@ -1,0 +1,22 @@
+{
+  "id": "formula_student_2026",
+  "name": "Formula Student",
+  "revision": "2026 (maximum cone spacing only)",
+  "source_note": "The project specification only defines a Formula Student 2026 cone-spacing rule: maximum 5 m, with tighter spacing in corners. Track width, turning diameter, straight length, lap length, and cone dimensions are NOT taken from the Formula Student rules. Those fields stay null here and fall back to generator settings. Cone colors and sizes below are the shared project defaults from the specification, not a claim about the Formula Student rulebook.",
+  "min_track_width_m": null,
+  "min_turning_diameter_m": null,
+  "max_straight_length_m": null,
+  "target_lap_length_m": null,
+  "left_cone": "blue_small",
+  "right_cone": "yellow_small",
+  "entry_exit_cone": "orange_small",
+  "start_finish_cone": "orange_large",
+  "small_cone_base_m": 0.228,
+  "small_cone_height_m": 0.325,
+  "large_cone_base_m": 0.285,
+  "large_cone_height_m": 0.505,
+  "left_stripe": "white",
+  "right_stripe": "black",
+  "max_cone_spacing_m": 5.0,
+  "enforce_corner_spacing": true
+}
