@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import unittest
 
 from fsae_env_generator.assets import build_cone_library, mesh_aabb
@@ -101,6 +102,33 @@ class SceneTests(unittest.TestCase):
         width_check = next(check for check in report.checks if check.name == "Track width meets the selected profile")
         self.assertFalse(width_check.passed)
         self.assertFalse(report.passed)
+
+    def test_open_tarmac_paddock_and_cone_pose(self) -> None:
+        environment, report = generate_environment(GeneratorConfig(seed=1))
+        self.assertTrue(report.passed, [check.detail for check in report.checks if not check.passed])
+        self.assertLessEqual(report.minimum_cone_spacing_m["left"], 2.35)
+        self.assertGreaterEqual(report.maximum_cone_spacing_m["left"], 4.5)
+        self.assertGreaterEqual(report.maximum_cone_spacing_m["left"], report.minimum_cone_spacing_m["left"])
+        assets = {obj.asset for obj in environment.objects}
+        roles = {obj.role for obj in environment.objects}
+        self.assertIn("tent", roles)
+        self.assertIn("marshal", roles)
+        self.assertIn("barrier", roles)
+        self.assertTrue(assets.intersection({"van", "trailer"}))
+        self.assertNotIn("building", assets)
+        cones = [obj for obj in environment.objects if obj.role == "boundary_cone"]
+        self.assertGreater(max(obj.yaw for obj in cones) - min(obj.yaw for obj in cones), 1.0)
+        self.assertTrue(any(abs(obj.pitch) > 1e-4 or abs(obj.roll) > 1e-4 for obj in cones))
+        self.assertTrue(all(abs(obj.pitch) <= math.radians(1.5) + 1e-6 for obj in cones))
+        names = {mesh.name for mesh in environment.unique_meshes}
+        self.assertIn("FSAE_Track_Surface", names)
+        self.assertIn("FSAE_Grass_Berms", names)
+        self.assertIn("FSAE_Skid_Marks", names)
+        self.assertIn("FSAE_Distractor_Paint", names)
+        self.assertIn("FSAE_Timing_Arch", names)
+        surface = next(mesh for mesh in environment.unique_meshes if mesh.name == "FSAE_Track_Surface")
+        xs = [vertex[0] for vertex in surface.mesh.vertices]
+        self.assertGreater(max(xs) - min(xs), environment.track.width * 8.0)
 
     def test_collections_are_assigned_on_every_object(self) -> None:
         environment = assemble_environment(GeneratorConfig(seed=2, track_type="autocross"))

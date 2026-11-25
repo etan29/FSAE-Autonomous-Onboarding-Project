@@ -48,6 +48,10 @@ MATERIAL_RGBA: dict[str, tuple[float, float, float, float]] = {
     "table": (0.45, 0.28, 0.14, 1.0),
     "parking": (0.08, 0.08, 0.09, 1.0),
     "equipment": (0.4, 0.4, 0.42, 1.0),
+    "hi_vis": (0.95, 0.55, 0.02, 1.0),
+    "paint_white": (0.78, 0.78, 0.72, 1.0),
+    "paint_yellow": (0.78, 0.62, 0.12, 1.0),
+    "skid": (0.012, 0.012, 0.013, 1.0),
 }
 
 TENT_COLORS = ("tent_red", "tent_blue", "tent_white", "tent_green", "tent_yellow")
@@ -303,17 +307,16 @@ def _tent(width: float, depth: float, height: float, cloth: str) -> MeshData:
     pole_h = height * 0.72
     for x, y in ((-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)):
         _cylinder(vertices, faces, materials, x * 0.92, y * 0.92, 0.0, pole_h, 0.04, 5, 0)
-    # Canopy sits on the poles. A box roof is enough at this detail level.
-    _box(vertices, faces, materials, (0.0, 0.0, pole_h + 0.18), (width, depth, 0.36), 1)
-    # A raised ridge makes the tent read as a tent rather than a crate.
-    ridge_z = pole_h + 0.55
+    # Peaked pop-up canopy: cloth rises to a ridge, with no solid box roof.
+    ridge_z = pole_h + 0.7
+    eave_z = pole_h + 0.02
     base = len(vertices)
     vertices.extend(
         (
-            (-hx, -hy, pole_h + 0.36),
-            (hx, -hy, pole_h + 0.36),
-            (hx, hy, pole_h + 0.36),
-            (-hx, hy, pole_h + 0.36),
+            (-hx, -hy, eave_z),
+            (hx, -hy, eave_z),
+            (hx, hy, eave_z),
+            (-hx, hy, eave_z),
             (0.0, -hy, ridge_z),
             (0.0, hy, ridge_z),
         )
@@ -358,6 +361,40 @@ def _tire_stack() -> MeshData:
     _cylinder(vertices, faces, materials, 0.0, 0.0, 0.22, 0.44, 0.34, 8, 0)
     _cylinder(vertices, faces, materials, 0.0, 0.0, 0.44, 0.66, 0.34, 8, 0)
     return _finish(vertices, faces, materials, ["tire"])
+
+
+def _fence() -> MeshData:
+    """Two-meter fencing bay: posts and a pair of rails, centered on the origin."""
+    vertices: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, ...]] = []
+    materials: list[int] = []
+    _box(vertices, faces, materials, (-1.0, 0.0, 0.6), (0.08, 0.08, 1.2), 0)
+    _box(vertices, faces, materials, (1.0, 0.0, 0.6), (0.08, 0.08, 1.2), 0)
+    _box(vertices, faces, materials, (0.0, 0.0, 0.45), (2.0, 0.03, 0.05), 0)
+    _box(vertices, faces, materials, (0.0, 0.0, 0.95), (2.0, 0.03, 0.05), 0)
+    return _finish(vertices, faces, materials, ["barrier"])
+
+
+def _van() -> MeshData:
+    vertices: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, ...]] = []
+    materials: list[int] = []
+    _box(vertices, faces, materials, (0.0, 0.0, 1.05), (5.4, 2.05, 1.7), 0)
+    _box(vertices, faces, materials, (1.55, 0.0, 1.35), (1.5, 1.9, 0.85), 1)
+    for wx, wy in ((-1.7, 0.95), (1.6, 0.95), (-1.7, -0.95), (1.6, -0.95)):
+        _box(vertices, faces, materials, (wx, wy, 0.32), (0.55, 0.22, 0.55), 2)
+    return _finish(vertices, faces, materials, ["car_body", "glass", "tire"])
+
+
+def _trailer() -> MeshData:
+    vertices: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, ...]] = []
+    materials: list[int] = []
+    _box(vertices, faces, materials, (-0.3, 0.0, 1.35), (6.2, 2.3, 2.2), 0)
+    _box(vertices, faces, materials, (3.3, 0.0, 0.55), (1.4, 0.12, 0.12), 1)
+    for wx, wy in ((-1.5, 1.05), (0.7, 1.05), (-1.5, -1.05), (0.7, -1.05)):
+        _box(vertices, faces, materials, (wx, wy, 0.34), (0.5, 0.24, 0.55), 2)
+    return _finish(vertices, faces, materials, ["building", "pole", "tire"])
 
 
 def _building() -> MeshData:
@@ -405,14 +442,17 @@ def _equipment() -> MeshData:
     return _finish(vertices, faces, materials, ["equipment"])
 
 
-def _marshall() -> MeshData:
+def _track_marshal() -> MeshData:
+    """Person in a high-visibility vest, standing on the origin."""
     vertices: list[tuple[float, float, float]] = []
     faces: list[tuple[int, ...]] = []
     materials: list[int] = []
-    _cylinder(vertices, faces, materials, 0.0, 0.0, 0.0, 2.2, 0.04, 5, 0)
-    _cone(vertices, faces, materials, 0.0, 0.0, 2.0, 2.7, 1.1, 8, 1)
-    _box(vertices, faces, materials, (0.9, 0.0, 0.75), (1.2, 0.6, 0.08), 2)
-    return _finish(vertices, faces, materials, ["pole", "tent_yellow", "table"])
+    _box(vertices, faces, materials, (0.0, 0.0, 0.45), (0.28, 0.16, 0.9), 0)
+    _box(vertices, faces, materials, (0.0, 0.0, 1.15), (0.4, 0.22, 0.55), 1)
+    _box(vertices, faces, materials, (0.0, 0.0, 1.62), (0.18, 0.18, 0.22), 2)
+    _box(vertices, faces, materials, (-0.28, 0.0, 1.2), (0.1, 0.1, 0.42), 1)
+    _box(vertices, faces, materials, (0.28, 0.0, 1.2), (0.1, 0.1, 0.42), 1)
+    return _finish(vertices, faces, materials, ["pants", "hi_vis", "skin"])
 
 
 def quad_mesh(width: float, depth: float, material: str, z: float = 0.0) -> MeshData:
@@ -441,13 +481,16 @@ def build_asset_library(profile: RuleProfile) -> dict[str, MeshData]:
         library[f"spectator_{shirt}"] = _spectator(shirt, arms_up=False)
         library[f"spectator_{shirt}_up"] = _spectator(shirt, arms_up=True)
     library["barrier"] = _barrier()
+    library["fence"] = _fence()
     library["tire_stack"] = _tire_stack()
     library["building"] = _building()
     library["car"] = _car()
+    library["van"] = _van()
+    library["trailer"] = _trailer()
     library["flag"] = _flag()
     library["table"] = _table()
     library["equipment"] = _equipment()
-    library["marshall"] = _marshall()
+    library["marshal"] = _track_marshal()
     return library
 
 
@@ -461,13 +504,16 @@ ASSET_FOOTPRINT: dict[str, float] = {
     "tent_medium": 3.7,
     "tent_large": 5.6,
     "barrier": 1.05,
+    "fence": 0.85,
     "tire_stack": 0.4,
     "building": 7.3,
     "car": 2.3,
+    "van": 2.9,
+    "trailer": 3.3,
     "flag": 0.5,
     "table": 0.7,
     "equipment": 0.5,
-    "marshall": 1.3,
+    "marshal": 0.45,
     "blue_small": 0.162,
     "yellow_small": 0.162,
     "orange_small": 0.162,

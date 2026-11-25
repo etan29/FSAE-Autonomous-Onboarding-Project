@@ -14,7 +14,8 @@ from .config import GeneratorConfig, config_to_dict, resolve_limits
 from .cones import NameSequence, generate_cones
 from .environment import generate_environment as generate_surroundings
 from .environment import terrain_bounds, terrain_mesh
-from .math2d import Vec2, bounding_box
+from .tarmac import build_tarmac
+from .math2d import Vec2
 from .models import MeshData, PlacedObject, UniqueMesh
 from .rng import SeededRNG
 from .track import TrackData, generate_track
@@ -94,6 +95,7 @@ class GeneratedEnvironment:
 
 
 def _lighting(config: GeneratorConfig, rng: SeededRNG) -> tuple[dict, str]:
+    """Nishita sky. The seed picks sun elevation and azimuth so shadows change with the seed."""
     weather = config.weather if config.weather in {"clear", "overcast", "rain", "fog"} else "clear"
     preset_name = config.lighting if config.lighting in _LIGHTING else "noon"
     note = ""
@@ -104,39 +106,61 @@ def _lighting(config: GeneratorConfig, rng: SeededRNG) -> tuple[dict, str]:
         note = "Fog is represented by a dimmer gray background. Volumetric fog is not simulated."
     elif weather == "overcast" and preset_name == "noon":
         preset_name = "overcast"
+    sky = rng.child("lighting")
+    if preset_name == "night":
+        elevation = sky.uniform(-14.0, -4.0)
+    elif preset_name == "sunset":
+        elevation = sky.uniform(6.0, 16.0)
+    elif preset_name == "overcast":
+        elevation = sky.uniform(24.0, 52.0)
+    else:
+        elevation = sky.uniform(20.0, 64.0)
+    azimuth = sky.uniform(0.0, 360.0)
     preset = _LIGHTING[preset_name]
-    azimuth = preset["azimuth"] + rng.child("lighting").uniform(-18.0, 18.0)
     energy = preset["energy"]
-    world_energy = preset["world_energy"]
+    world_energy = 1.0
+    dust = sky.uniform(0.6, 2.4)
+    air = sky.uniform(0.8, 1.8)
     if weather == "fog":
+        energy *= 0.45
+        world_energy *= 0.55
+        dust = sky.uniform(4.0, 7.0)
+    elif weather == "rain" or preset_name == "overcast":
         energy *= 0.55
-        world_energy *= 0.6
+        dust = max(dust, 3.0)
+    elif preset_name == "night":
+        energy = 0.15
+        world_energy = 0.08
     return (
         {
             "preset": preset_name,
             "weather": weather,
             "azimuth": azimuth,
-            "elevation": preset["elevation"],
+            "elevation": elevation,
             "energy": energy,
             "sun_color": preset["sun_color"],
             "world_color": preset["world_color"],
             "world_energy": world_energy,
+            "air_density": air,
+            "dust_density": dust,
+            "ozone_density": sky.uniform(0.8, 2.2),
+            "sun_intensity": 0.35 if preset_name != "night" else 0.02,
             "note": note,
         },
         note,
     )
 
 
-def _camera(track: TrackData, rng: SeededRNG) -> dict:
-    min_x, min_y, max_x, max_y = bounding_box(track.centerline)
+def _camera(track: TrackData, rng: SeededRNG, bounds: tuple[float, float, float, float]) -> dict:
+    min_x, min_y, max_x, max_y = bounds
     center = Vec2((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
-    span = max(max_x - min_x, max_y - min_y, 30.0)
+    span = max(max_x - min_x, max_y - min_y, 40.0)
     yaw = rng.child("camera").uniform(0.0, 2.0 * math.pi)
-    distance = span * 0.95
+    distance = span * 0.72
     return {
         "x": center.x + math.cos(yaw) * distance,
         "y": center.y + math.sin(yaw) * distance,
-        "z": span * 0.62,
+        "z": span * 0.42,
         "target_x": center.x,
         "target_y": center.y,
         "target_z": 0.0,
@@ -155,17 +179,12 @@ def assemble_environment(config: GeneratorConfig) -> GeneratedEnvironment:
     assets = build_asset_library(profile)
     bounds = terrain_bounds(track, config)
     surface_material = SURFACE_MATERIALS.get(config.surface_appearance, "asphalt")
-    surface = UniqueMesh(
-        name="FSAE_Track_Surface",
-        collection="Track/Track_Surface",
-        mesh=MeshData(
-            vertices=track.surface_vertices,
-            faces=track.surface_faces,
-            material_slots=[surface_material],
-            face_materials=[0] * len(track.surface_faces),
-        ),
-    )
-    unique = [terrain_mesh(bounds), surface, *markings, *prop_meshes]
+    lot_meshes = build_tarmac(track, config, rng)
+    if surface_material != "asphalt":
+        for mesh in lot_meshes:
+            if mesh.name == "FSAE_Track_Surface":
+                mesh.mesh.material_slots = [surface_material]
+    unique = [terrain_mesh(bounds), *lot_meshes, *markings, *prop_meshes]
     lighting, light_note = _lighting(config, rng)
     warnings = [*cone_warnings, *env_warnings]
     if light_note:
@@ -184,7 +203,7 @@ def assemble_environment(config: GeneratorConfig) -> GeneratedEnvironment:
         assets=assets,
         unique_meshes=unique,
         lighting=lighting,
-        camera=_camera(track, rng),
+        camera=_camera(track, rng, bounds),
         label_text=label,
         label_position=(min_x + 1.0, max_y - 1.0, 0.2),
         terrain_bounds=bounds,

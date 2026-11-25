@@ -129,6 +129,8 @@ def scene_signature(track: TrackData, objects: list[PlacedObject]) -> list[tuple
                 round(obj.y, 6),
                 round(obj.z, 6),
                 round(obj.yaw, 6),
+                round(obj.pitch, 6),
+                round(obj.roll, 6),
                 tuple(round(value, 6) for value in obj.scale),
             )
         )

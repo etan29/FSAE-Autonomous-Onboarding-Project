@@ -40,17 +40,24 @@ class NameSequence:
 
 
 def spacing_for_curvature(curvature: float, config: GeneratorConfig, limits: ResolvedLimits) -> float:
-    """Straight sections use the nominal spacing. Tight radii use a smaller gap."""
+    """Straights use the nominal gap. High curvature closes the gap toward 2 m.
+
+    The default nominal gap is 5 m. A radius at or above ``corner_radius_threshold``
+    keeps that gap. By a 6 m radius the gap has reached ``min_cone_spacing`` (2 m
+    unless the user asked for an even smaller straight spacing).
+    """
     nominal = limits.nominal_cone_spacing
     if not limits.tighten_corners:
         return nominal
     radius = 1.0 / abs(curvature) if abs(curvature) > 1e-6 else 1e9
     if radius >= config.corner_radius_threshold:
         return nominal
-    span = max(config.corner_radius_threshold - 4.5, 1.0)
-    blend = max(0.0, min(1.0, (radius - 4.5) / span))
-    factor = limits.corner_spacing_factor + blend * (1.0 - limits.corner_spacing_factor)
-    return max(limits.min_cone_spacing, min(limits.max_cone_spacing, nominal * factor))
+    tight_radius = 6.0
+    span = max(config.corner_radius_threshold - tight_radius, 1.0)
+    blend = max(0.0, min(1.0, (radius - tight_radius) / span))
+    floor = min(limits.min_cone_spacing, nominal)
+    spacing = floor + blend * (nominal - floor)
+    return max(floor, min(limits.max_cone_spacing, spacing))
 
 
 def _nearest_curvature(point: Vec2, track: TrackData) -> float:
@@ -153,6 +160,16 @@ def _yaw(tangent: Vec2) -> float:
     return math.atan2(tangent.y, tangent.x)
 
 
+def _pose_cone(position: Vec2, pose_rng: SeededRNG) -> tuple[Vec2, float, float, float]:
+    """Seeded Z spin, ±5 cm of ground jitter, and ±1.5° of tilt."""
+    jittered = position + Vec2(pose_rng.uniform(-0.05, 0.05), pose_rng.uniform(-0.05, 0.05))
+    yaw = pose_rng.uniform(0.0, math.tau)
+    tilt = math.radians(1.5)
+    pitch = pose_rng.uniform(-tilt, tilt)
+    roll = pose_rng.uniform(-tilt, tilt)
+    return jittered, yaw, pitch, roll
+
+
 def _append_cone(
     objects: list[PlacedObject],
     occupied: SpatialHash[float],
@@ -163,8 +180,13 @@ def _append_cone(
     role: str,
     metadata: dict,
     min_distance: float,
+    pose_rng: SeededRNG | None = None,
 ) -> bool:
     del min_distance  # Separation is the sum of the two base radii, looked up per neighbor.
+    pitch = 0.0
+    roll = 0.0
+    if pose_rng is not None:
+        position, yaw, pitch, roll = _pose_cone(position, pose_rng)
     footprint = footprint_of(kind)
     for other, other_footprint in occupied.query_radius(position, footprint + 0.35):
         if position.distance(other) < footprint + other_footprint - 1e-4:
@@ -177,6 +199,8 @@ def _append_cone(
         y=position.y,
         z=0.0,
         yaw=yaw,
+        pitch=pitch,
+        roll=roll,
         role=role,
         metadata=metadata,
     )
@@ -198,6 +222,7 @@ def _boundary_cones(
     occupied: SpatialHash[float],
     variation_rng: SeededRNG | None,
     objects: list[PlacedObject],
+    pose_rng: SeededRNG | None = None,
 ) -> None:
     stations, total = _stations_along(boundary, track, config, limits)
     cumulative = cumulative_lengths(boundary, track.closed)
@@ -216,7 +241,8 @@ def _boundary_cones(
         if variation_rng is not None and not is_gate and config.cone_placement_variation > 0.0:
             amount = config.cone_placement_variation
             shifted = center + tangent * variation_rng.uniform(-amount, amount) + outward * variation_rng.uniform(0.0, amount)
-            # Never pull the cone back onto the asphalt.
+            # Extra along-track variation stays outside the inner edge. The ±5 cm
+            # pose jitter below is applied later, on every cone.
             if min_distance_to_polyline(shifted, track.centerline, track.closed) >= track.width * 0.5 + half_base * 0.9:
                 center = shifted
         required = footprint_of(kind) + 0.16
@@ -229,7 +255,9 @@ def _boundary_cones(
         }
         if is_gate:
             metadata["timing_gate"] = True
-        placed = _append_cone(objects, occupied, names, center, yaw, kind, role, metadata, required)
+        placed = _append_cone(
+            objects, occupied, names, center, yaw, kind, role, metadata, required, pose_rng
+        )
         if not placed and not is_gate:
             # Slide along the boundary a short distance before giving up.
             for delta in (0.3, -0.3, 0.6, -0.6):
@@ -249,6 +277,7 @@ def _boundary_cones(
                     role,
                     metadata,
                     required,
+                    pose_rng,
                 ):
                     break
 
@@ -262,6 +291,7 @@ def _lane_cones(
     occupied: SpatialHash[float],
     objects: list[PlacedObject],
     warnings: list[str],
+    pose_rng: SeededRNG | None = None,
 ) -> None:
     """Orange corridor beside the start straight.
 
@@ -321,6 +351,7 @@ def _lane_cones(
                     "lane_cone",
                     metadata,
                     footprint_of(kind) + 0.16,
+                    pose_rng,
                 ):
                     accepted += 1
                 else:
@@ -371,6 +402,7 @@ def generate_cones(
     objects: list[PlacedObject] = []
     occupied: SpatialHash[float] = SpatialHash(1.0)
     variation = rng.child("cones") if config.cone_placement_variation > 0.0 else None
+    pose_rng = rng.child("cone-pose")
     # Left of the direction of travel uses the positive left normal. Right uses the opposite.
     _boundary_cones(
         track.left_boundary,
@@ -385,6 +417,7 @@ def generate_cones(
         occupied,
         variation,
         objects,
+        pose_rng,
     )
     _boundary_cones(
         track.right_boundary,
@@ -399,8 +432,9 @@ def generate_cones(
         occupied,
         variation,
         objects,
+        pose_rng,
     )
-    _lane_cones(track, profile, config, limits, names, occupied, objects, warnings)
+    _lane_cones(track, profile, config, limits, names, occupied, objects, warnings, pose_rng)
     markings: list[UniqueMesh] = []
     if config.enable_start_finish and track.centerline:
         markings.append(start_line_mesh(track))

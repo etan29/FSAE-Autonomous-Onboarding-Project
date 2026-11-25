@@ -26,6 +26,8 @@ class PlacedObject:
     y: float
     z: float = 0.0
     yaw: float = 0.0
+    pitch: float = 0.0
+    roll: float = 0.0
     scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
     role: str = ""
     metadata: dict = field(default_factory=dict)

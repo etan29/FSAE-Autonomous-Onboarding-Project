@@ -33,11 +33,11 @@ class FSAESettings(bpy.types.PropertyGroup):
     )
     cone_spacing: bpy.props.FloatProperty(
         name="Cone Spacing",
-        default=4.0,
+        default=5.0,
         min=1.0,
         soft_max=8.0,
         unit="LENGTH",
-        description="Spacing along straights, in meters. Corners are tighter. Formula Student caps this at 5 m",
+        description="Spacing along straights, in meters. High-curvature turns tighten toward 2 m. Formula Student caps this at 5 m",
     )
     track_type: bpy.props.EnumProperty(
         name="Track Type",

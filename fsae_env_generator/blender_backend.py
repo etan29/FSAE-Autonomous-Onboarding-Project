@@ -7,6 +7,7 @@ This module is imported only when `bpy` is available.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -27,34 +28,173 @@ from .pipeline import GeneratedEnvironment
 from .validation import ValidationReport, format_report
 
 
+def _fresh_principled(material: bpy.types.Material) -> bpy.types.Node:
+    material.use_nodes = True
+    tree = material.node_tree
+    tree.nodes.clear()
+    output = tree.nodes.new("ShaderNodeOutputMaterial")
+    principled = tree.nodes.new("ShaderNodeBsdfPrincipled")
+    output.location = (400, 0)
+    principled.location = (0, 0)
+    tree.links.new(principled.outputs["BSDF"], output.inputs["Surface"])
+    return principled
+
+
+def _set_input(node: bpy.types.Node, names: tuple[str, ...], value) -> None:
+    for name in names:
+        socket = node.inputs.get(name)
+        if socket is not None and not socket.is_linked:
+            socket.default_value = value
+            return
+
+
+def _build_flat_shader(material: bpy.types.Material, color: tuple[float, float, float, float], roughness: float) -> None:
+    principled = _fresh_principled(material)
+    _set_input(principled, ("Base Color",), color)
+    _set_input(principled, ("Roughness",), roughness)
+    _set_input(principled, ("Specular", "Specular IOR Level"), 0.25)
+
+
+def _build_cone_shader(material: bpy.types.Material, color: tuple[float, float, float, float], kind: str) -> None:
+    """PVC body, glossy white band, or matte black band. Dirt collects near z = 0."""
+    principled = _fresh_principled(material)
+    tree = material.node_tree
+    nodes = tree.nodes
+    if kind == "black":
+        roughness = 0.92
+        specular = 0.02
+        subsurface = 0.0
+    elif kind == "white":
+        roughness = 0.16
+        specular = 0.72
+        subsurface = 0.08
+    else:
+        roughness = 0.38
+        specular = 0.3
+        subsurface = 0.1
+    _set_input(principled, ("Base Color",), color)
+    _set_input(principled, ("Specular", "Specular IOR Level"), specular)
+    _set_input(principled, ("Subsurface", "Subsurface Weight"), subsurface)
+    _set_input(principled, ("Subsurface Radius",), (1.0, 0.2, 0.1))
+
+    coordinate = nodes.new("ShaderNodeTexCoord")
+    coordinate.location = (-900, 0)
+    separate = nodes.new("ShaderNodeSeparateXYZ")
+    separate.location = (-700, -80)
+    noise = nodes.new("ShaderNodeTexNoise")
+    noise.location = (-700, 220)
+    noise.noise_dimensions = "3D"
+    _set_input(noise, ("Scale",), 22.0)
+    _set_input(noise, ("Detail",), 3.0)
+    _set_input(noise, ("Roughness",), 0.45)
+    rough_map = nodes.new("ShaderNodeMapRange")
+    rough_map.location = (-420, 220)
+    _set_input(rough_map, ("From Min",), 0.3)
+    _set_input(rough_map, ("From Max",), 0.7)
+    _set_input(rough_map, ("To Min",), roughness - 0.05)
+    _set_input(rough_map, ("To Max",), roughness + 0.05)
+    if hasattr(rough_map, "clamp"):
+        rough_map.clamp = True
+    tree.links.new(coordinate.outputs["Generated"], noise.inputs["Vector"])
+    tree.links.new(noise.outputs["Fac"], rough_map.inputs["Value"])
+    tree.links.new(rough_map.outputs["Result"], principled.inputs["Roughness"])
+
+    if kind == "black":
+        return
+    dirt_map = nodes.new("ShaderNodeMapRange")
+    dirt_map.location = (-420, -80)
+    _set_input(dirt_map, ("From Min",), 0.0)
+    _set_input(dirt_map, ("From Max",), 0.22)
+    _set_input(dirt_map, ("To Min",), 1.0)
+    _set_input(dirt_map, ("To Max",), 0.0)
+    if hasattr(dirt_map, "clamp"):
+        dirt_map.clamp = True
+    dirt_mix = nodes.new("ShaderNodeMath")
+    dirt_mix.location = (-200, -40)
+    dirt_mix.operation = "MULTIPLY"
+    mix = nodes.new("ShaderNodeMixRGB")
+    mix.location = (-40, 80)
+    mix.inputs["Color1"].default_value = color
+    mix.inputs["Color2"].default_value = (0.28, 0.2, 0.1, 1.0)
+    tree.links.new(coordinate.outputs["Generated"], separate.inputs["Vector"])
+    tree.links.new(separate.outputs["Z"], dirt_map.inputs["Value"])
+    tree.links.new(dirt_map.outputs["Result"], dirt_mix.inputs[0])
+    tree.links.new(noise.outputs["Fac"], dirt_mix.inputs[1])
+    tree.links.new(dirt_mix.outputs["Value"], mix.inputs["Fac"])
+    tree.links.new(mix.outputs["Color"], principled.inputs["Base Color"])
+
+
+def _build_asphalt_shader(material: bpy.types.Material, color: tuple[float, float, float, float]) -> None:
+    """Weathered asphalt: large color patches, fine roughness, and a light bump."""
+    principled = _fresh_principled(material)
+    tree = material.node_tree
+    nodes = tree.nodes
+    coordinate = nodes.new("ShaderNodeTexCoord")
+    coordinate.location = (-1100, 0)
+    patch = nodes.new("ShaderNodeTexNoise")
+    patch.location = (-860, 180)
+    grain = nodes.new("ShaderNodeTexNoise")
+    grain.location = (-860, -80)
+    for node, scale in ((patch, 3.5), (grain, 28.0)):
+        node.noise_dimensions = "3D"
+        _set_input(node, ("Scale",), scale)
+        _set_input(node, ("Detail",), 6.0)
+        tree.links.new(coordinate.outputs["Object"], node.inputs["Vector"])
+    color_map = nodes.new("ShaderNodeMapRange")
+    color_map.location = (-600, 180)
+    _set_input(color_map, ("From Min",), 0.35)
+    _set_input(color_map, ("From Max",), 0.7)
+    _set_input(color_map, ("To Min",), 0.0)
+    _set_input(color_map, ("To Max",), 1.0)
+    mix = nodes.new("ShaderNodeMixRGB")
+    mix.location = (-320, 160)
+    mix.inputs["Color1"].default_value = color
+    mix.inputs["Color2"].default_value = (0.08, 0.08, 0.085, 1.0)
+    rough_map = nodes.new("ShaderNodeMapRange")
+    rough_map.location = (-320, -80)
+    _set_input(rough_map, ("From Min",), 0.25)
+    _set_input(rough_map, ("From Max",), 0.75)
+    _set_input(rough_map, ("To Min",), 0.72)
+    _set_input(rough_map, ("To Max",), 0.95)
+    bump = nodes.new("ShaderNodeBump")
+    bump.location = (-40, -220)
+    _set_input(bump, ("Strength",), 0.18)
+    _set_input(bump, ("Distance",), 0.015)
+    tree.links.new(patch.outputs["Fac"], color_map.inputs["Value"])
+    tree.links.new(color_map.outputs["Result"], mix.inputs["Fac"])
+    tree.links.new(mix.outputs["Color"], principled.inputs["Base Color"])
+    tree.links.new(grain.outputs["Fac"], rough_map.inputs["Value"])
+    tree.links.new(rough_map.outputs["Result"], principled.inputs["Roughness"])
+    tree.links.new(grain.outputs["Fac"], bump.inputs["Height"])
+    normal = principled.inputs.get("Normal")
+    if normal is not None:
+        tree.links.new(bump.outputs["Normal"], normal)
+    _set_input(principled, ("Specular", "Specular IOR Level"), 0.12)
+
+
 def _material(name: str, color: tuple[float, float, float, float], roughness: float) -> bpy.types.Material:
     material_name = f"FSAE_MAT_{name}"
     material = bpy.data.materials.get(material_name)
     if material is None:
         material = bpy.data.materials.new(material_name)
-    material.use_nodes = True
     material.diffuse_color = color
     if hasattr(material, "use_backface_culling"):
         material.use_backface_culling = False
-    principled = material.node_tree.nodes.get("Principled BSDF")
-    if principled is not None:
-        color_input = principled.inputs.get("Base Color")
-        if color_input is not None:
-            color_input.default_value = color
-        rough_input = principled.inputs.get("Roughness")
-        if rough_input is not None:
-            rough_input.default_value = roughness
-        # Blender 3.x calls this Specular. Blender 4.x renamed it.
-        specular = principled.inputs.get("Specular")
-        if specular is None:
-            specular = principled.inputs.get("Specular IOR Level")
-        if specular is not None and not specular.is_linked:
-            specular.default_value = 0.25
+    if name == "asphalt":
+        _build_asphalt_shader(material, color)
+    elif name in {"cone_blue", "cone_yellow", "cone_orange"}:
+        _build_cone_shader(material, color, "body")
+    elif name == "cone_white":
+        _build_cone_shader(material, color, "white")
+    elif name == "cone_black":
+        _build_cone_shader(material, color, "black")
+    else:
+        _build_flat_shader(material, color, roughness)
     return material
 
 
 def _roughness_for(name: str) -> float:
-    if name in {"asphalt", "asphalt_dark", "parking", "tire"}:
+    if name in {"asphalt", "asphalt_dark", "parking", "tire", "skid"}:
         return 0.9
     if name in {"grass", "foliage", "foliage_dark"}:
         return 0.8
@@ -214,9 +354,10 @@ def _add_sun(lighting: dict, collection: bpy.types.Collection) -> None:
     light_data = bpy.data.lights.new("FSAE_Sun", "SUN")
     light_data.energy = float(lighting["energy"])
     light_data.color = lighting["sun_color"][:3]
+    if hasattr(light_data, "angle"):
+        light_data.angle = math.radians(0.5)
     obj = bpy.data.objects.new("FSAE_Sun", light_data)
     _link_object(obj, collection)
-    import math
 
     elevation = math.radians(float(lighting["elevation"]))
     azimuth = math.radians(float(lighting["azimuth"]))
@@ -243,19 +384,37 @@ def _add_camera(camera: dict, collection: bpy.types.Collection, scene: bpy.types
 
 
 def _add_world(scene: bpy.types.Scene, lighting: dict) -> None:
+    """Nishita sky driven by the same sun angles as the lamp."""
     world = bpy.data.worlds.get("FSAE_World")
     if world is None:
         world = bpy.data.worlds.new("FSAE_World")
     world.use_nodes = True
     nodes = world.node_tree.nodes
-    background = nodes.get("Background")
-    if background is None:
-        background = nodes.new("ShaderNodeBackground")
-        output = nodes.get("World Output") or nodes.new("ShaderNodeOutputWorld")
-        world.node_tree.links.new(background.outputs["Background"], output.inputs["Surface"])
-    color = (*lighting["world_color"][:3], 1.0)
-    background.inputs[0].default_value = color
-    background.inputs[1].default_value = float(lighting["world_energy"])
+    links = world.node_tree.links
+    nodes.clear()
+    output = nodes.new("ShaderNodeOutputWorld")
+    background = nodes.new("ShaderNodeBackground")
+    sky = nodes.new("ShaderNodeTexSky")
+    output.location = (400, 0)
+    background.location = (160, 0)
+    sky.location = (-200, 0)
+    if hasattr(sky, "sky_type"):
+        sky.sky_type = "NISHITA"
+    sky.sun_elevation = math.radians(float(lighting["elevation"]))
+    sky.sun_rotation = math.radians(float(lighting["azimuth"]))
+    if hasattr(sky, "sun_disc"):
+        sky.sun_disc = True
+    if hasattr(sky, "sun_intensity"):
+        sky.sun_intensity = float(lighting.get("sun_intensity", 0.3))
+    if hasattr(sky, "air_density"):
+        sky.air_density = float(lighting.get("air_density", 1.0))
+    if hasattr(sky, "dust_density"):
+        sky.dust_density = float(lighting.get("dust_density", 1.0))
+    if hasattr(sky, "ozone_density"):
+        sky.ozone_density = float(lighting.get("ozone_density", 1.0))
+    links.new(sky.outputs["Color"], background.inputs["Color"])
+    background.inputs["Strength"].default_value = float(lighting["world_energy"])
+    links.new(background.outputs["Background"], output.inputs["Surface"])
     scene.world = world
 
 
@@ -384,7 +543,8 @@ def build_blender_scene(environment: GeneratedEnvironment, report: ValidationRep
     for placed in environment.objects:
         obj = bpy.data.objects.new(placed.name, shared[placed.asset])
         obj.location = (placed.x, placed.y, placed.z)
-        obj.rotation_euler = (0.0, 0.0, placed.yaw)
+        obj.rotation_mode = "ZYX"
+        obj.rotation_euler = (placed.pitch, placed.roll, placed.yaw)
         obj.scale = placed.scale
         _link_object(obj, collections[placed.collection])
         _apply_tent_color(obj, placed, materials)
@@ -396,16 +556,7 @@ def build_blender_scene(environment: GeneratedEnvironment, report: ValidationRep
         _link_object(obj, collections[unique.collection])
 
     show_limits = bool(environment.config.get("enable_track_limits", True))
-    center_collection = collections["Track/Track_Centerline"]
-    _add_curve(
-        "FSAE_Centerline",
-        environment.track.centerline,
-        environment.track.closed,
-        0.025,
-        materials["start_line"],
-        center_collection,
-        0.06,
-    )
+    # The highway centerline is not drawn. The path stays in the track data for cones and checks.
     if show_limits:
         boundary_collection = collections["Track/Track_Boundaries"]
         _add_curve(

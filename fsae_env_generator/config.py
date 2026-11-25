@@ -109,7 +109,7 @@ class GeneratorConfig:
 
     seed: int = 1
     track_width: float = 3.5
-    cone_spacing: float = 4.0
+    cone_spacing: float = 5.0
     track_type: str = "trackdrive"
     rules_profile: str = "us_fsae_driverless_2025"
     centerline: list[list[float]] | None = None
@@ -137,7 +137,7 @@ class GeneratorConfig:
     corner_spacing_factor: float = 0.65
     corner_radius_threshold: float = 18.0
     cone_placement_variation: float = 0.0
-    terrain_margin: float = 30.0
+    terrain_margin: float = 42.0
     terrain_width: float | None = None
     terrain_depth: float | None = None
     env_density: float = 1.0
