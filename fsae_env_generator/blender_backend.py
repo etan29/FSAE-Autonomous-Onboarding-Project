@@ -182,6 +182,8 @@ def _material(name: str, color: tuple[float, float, float, float], roughness: fl
         material.use_backface_culling = False
     if name == "asphalt":
         _build_asphalt_shader(material, color)
+    elif name == "ground_blend":
+        _build_ground_shader(material, color)
     elif name in {"cone_blue", "cone_yellow", "cone_orange"}:
         _build_cone_shader(material, color, "body")
     elif name == "cone_white":
@@ -214,8 +216,50 @@ def _mesh_from_data(name: str, data: MeshData, materials: dict[str, bpy.types.Ma
         mesh.materials.append(materials[slot])
     for polygon, slot in zip(mesh.polygons, data.face_materials):
         polygon.material_index = slot
+    colors = getattr(data, "vertex_colors", None)
+    if colors and hasattr(mesh, "color_attributes"):
+        layer = mesh.color_attributes.new(name="Col", type="FLOAT_COLOR", domain="POINT")
+        for index, color in enumerate(colors):
+            layer.data[index].color = color
+        for polygon in mesh.polygons:
+            polygon.use_smooth = True
     mesh.update()
     return mesh
+
+
+def _build_ground_shader(material: bpy.types.Material, color: tuple[float, float, float, float]) -> None:
+    """Vertex colors carry asphalt, gravel, and grass. Noise only weathers that color."""
+    material.use_nodes = True
+    tree = material.node_tree
+    tree.nodes.clear()
+    output = tree.nodes.new("ShaderNodeOutputMaterial")
+    principled = tree.nodes.new("ShaderNodeBsdfPrincipled")
+    attribute = tree.nodes.new("ShaderNodeAttribute")
+    attribute.attribute_name = "Col"
+    if hasattr(attribute, "attribute_type"):
+        attribute.attribute_type = "GEOMETRY"
+    noise = tree.nodes.new("ShaderNodeTexNoise")
+    noise.inputs["Scale"].default_value = 5.0
+    noise.inputs["Detail"].default_value = 4.0
+    mix = tree.nodes.new("ShaderNodeMixRGB")
+    mix.blend_type = "MULTIPLY"
+    mix.inputs["Fac"].default_value = 0.18
+    tree.links.new(attribute.outputs["Color"], mix.inputs["Color1"])
+    tree.links.new(noise.outputs["Color"], mix.inputs["Color2"])
+    tree.links.new(mix.outputs["Color"], principled.inputs["Base Color"])
+    tree.links.new(noise.outputs["Fac"], principled.inputs["Roughness"])
+    bump = tree.nodes.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = 0.15
+    bump.inputs["Distance"].default_value = 0.02
+    tree.links.new(noise.outputs["Fac"], bump.inputs["Height"])
+    normal = principled.inputs.get("Normal")
+    if normal is not None:
+        tree.links.new(bump.outputs["Normal"], normal)
+    _set_input(principled, ("Specular", "Specular IOR Level"), 0.08)
+    principled.inputs["Base Color"].default_value = color
+    tree.links.new(principled.outputs["BSDF"], output.inputs["Surface"])
+    output.location = (400, 0)
+    principled.location = (120, 0)
 
 
 def _remove_collection_tree(collection: bpy.types.Collection) -> None:
@@ -314,8 +358,10 @@ def _link_object(obj: bpy.types.Object, collection: bpy.types.Collection) -> Non
 
 
 def _apply_tent_color(obj: bpy.types.Object, placed: PlacedObject, materials: dict[str, bpy.types.Material]) -> None:
+    if placed.role != "tent":
+        return
     color_name = placed.metadata.get("color")
-    if not color_name or len(obj.material_slots) < 2:
+    if not color_name or color_name not in materials or len(obj.material_slots) < 2:
         return
     slot = obj.material_slots[1]
     slot.link = "OBJECT"
@@ -427,6 +473,26 @@ def _add_label(text: str, location: tuple[float, float, float], collection: bpy.
     obj = bpy.data.objects.new("FSAE_Rules_Label", curve)
     obj.location = location
     _link_object(obj, collection)
+
+
+def _write_ground_truth(environment, passed: bool) -> None:
+    payload = getattr(environment, "ground_truth", None) or {}
+    if not payload:
+        return
+    existing = bpy.data.texts.get("FSAE_Ground_Truth")
+    if existing is not None:
+        bpy.data.texts.remove(existing)
+    text = bpy.data.texts.new("FSAE_Ground_Truth")
+    text.write(json.dumps(payload, indent=2))
+    if not passed:
+        return
+    try:
+        from .ground_truth import write_ground_truth_files
+
+        paths = write_ground_truth_files(payload, generated_tracks_directory(), int(environment.seed))
+        print(f"Saved FSAE ground truth: {paths[0]}")
+    except Exception as exc:
+        print(f"Ground truth export failed: {exc}")
 
 
 def _write_report(report: ValidationReport) -> None:
@@ -555,34 +621,13 @@ def build_blender_scene(environment: GeneratedEnvironment, report: ValidationRep
         obj.location = (unique.x, unique.y, unique.z)
         _link_object(obj, collections[unique.collection])
 
-    show_limits = bool(environment.config.get("enable_track_limits", True))
-    # The highway centerline is not drawn. The path stays in the track data for cones and checks.
-    if show_limits:
-        boundary_collection = collections["Track/Track_Boundaries"]
-        _add_curve(
-            "FSAE_Left_Boundary",
-            environment.track.left_boundary,
-            environment.track.closed,
-            0.012,
-            materials["cone_blue"],
-            boundary_collection,
-            0.045,
-        )
-        _add_curve(
-            "FSAE_Right_Boundary",
-            environment.track.right_boundary,
-            environment.track.closed,
-            0.012,
-            materials["cone_yellow"],
-            boundary_collection,
-            0.045,
-        )
-
+    # Boundaries stay in the ground-truth file. The only visible course edges are cones.
     _add_label(environment.label_text, environment.label_position, root, materials["start_line"])
     _add_sun(environment.lighting, collections["Lighting"])
     _add_camera(environment.camera, collections["Cameras"], scene)
     _add_world(scene, environment.lighting)
     _write_report(report)
+    _write_ground_truth(environment, report.passed)
 
     root["fsae_seed"] = environment.seed
     root["fsae_rules_profile"] = environment.profile_id

@@ -60,6 +60,14 @@ class TrackData:
     surface_faces: list[tuple[int, int, int]]
     centerline_method: str
     warnings: list[str] = field(default_factory=list)
+    event_type: str = "trackdrive"
+    timed_length: float = 0.0
+    gate_stations: list[float] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+    official_notes: list[str] = field(default_factory=list)
+    stopping_zone: dict = field(default_factory=dict)
+    event_metrics: dict = field(default_factory=dict)
+    width_profile: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -421,8 +429,8 @@ def _apply_features(
 ) -> list[Vec2]:
     """Add an S-curve and a chicane when they still meet the geometric limits."""
     feature_rng = rng.child("features")
-    want_s = feature_rng.random() < 0.9
-    want_chicane = feature_rng.random() < 0.75
+    want_s = feature_rng.random() < config.s_curve_frequency
+    want_chicane = feature_rng.random() < config.chicane_frequency
     current = points
     if want_s:
         runs = sorted(_straight_runs(current, config), key=lambda run: run[2], reverse=True)
@@ -448,6 +456,18 @@ def _apply_features(
                 warnings.append("Added a chicane on a straight.")
             else:
                 warnings.append("Skipped the chicane because it violated a geometric limit.")
+    if feature_rng.random() < config.slalom_frequency:
+        runs = sorted(_straight_runs(current, config), key=lambda run: run[2], reverse=True)
+        chosen = runs[-1] if runs else None
+        if chosen is not None and chosen[2] >= 18.0:
+            start, end, length = chosen
+            amplitude = min(1.1, length * 0.02)
+            updated = _try_feature(current, start, end, amplitude, 6, config, limits)
+            if updated is not None:
+                current = updated
+                warnings.append("Added a slalom on a straight.")
+            else:
+                warnings.append("Skipped the slalom because it violated a geometric limit.")
     return current
 
 
@@ -484,7 +504,12 @@ def _split_long_edges(points: list[Vec2], max_len: float) -> list[Vec2] | None:
     return current
 
 
-def _fillet_polygon(points: list[Vec2], min_radius: float, spacing: float) -> tuple[list[Vec2], float] | None:
+def _fillet_polygon(
+    points: list[Vec2],
+    min_radius: float,
+    spacing: float,
+    config: GeneratorConfig | None = None,
+) -> tuple[list[Vec2], float] | None:
     """Fillet a CCW convex polygon. Returns samples and the smallest radius used.
 
     Setback along each edge is `r * tan(δ / 2)`, where δ is the heading change.
@@ -512,6 +537,10 @@ def _fillet_polygon(points: list[Vec2], min_radius: float, spacing: float) -> tu
         # Sharp corners stay at the minimum legal radius. Gentle corners open up.
         sharpness = min(1.0, turn / math.radians(110.0))
         desired = min_radius + (1.0 - sharpness) * min_radius
+        if config is not None and config.hairpin_frequency > 0.0 and sharpness > 0.8:
+            desired = min_radius * (1.0 - 0.35 * min(1.0, config.hairpin_frequency))
+        if config is not None and config.max_corner_radius > 0.0 and desired > config.max_corner_radius:
+            desired = max(min_radius, config.max_corner_radius)
         setback = desired * math.tan(turn * 0.5)
         if setback > max_setback:
             setback = max_setback
@@ -581,7 +610,7 @@ def _try_varied_polygon(
     points = _split_long_edges(points, limits.max_straight * 0.75)
     if points is None:
         return None
-    filleted = _fillet_polygon(points, radius, config.sample_spacing)
+    filleted = _fillet_polygon(points, radius, config.sample_spacing, config)
     if filleted is None:
         return None
     samples, achieved = filleted
@@ -591,7 +620,7 @@ def _try_varied_polygon(
         points = _split_long_edges(points, limits.max_straight * 0.75)
         if points is None:
             return None
-        filleted = _fillet_polygon(points, radius, config.sample_spacing)
+        filleted = _fillet_polygon(points, radius, config.sample_spacing, config)
         if filleted is None:
             return None
         samples, achieved = filleted
@@ -733,9 +762,26 @@ def build_track(
     # 2 m window so a fillet join is not reported as a tighter corner.
     curvature = curvatures(points, closed)
     windowed = curvatures_over_window(points, closed, window_m=2.0)
-    half = config.track_width * 0.5
-    left = [points[index] + normals[index] * half for index in range(len(points))]
-    right = [points[index] - normals[index] * half for index in range(len(points))]
+    variation = max(0.0, float(config.track_width_variation))
+    width_profile: list[float] = []
+    left: list[Vec2] = []
+    right: list[Vec2] = []
+    for index in range(len(points)):
+        scale = 1.0
+        if variation > 0.0:
+            scale = 1.0 + variation * math.sin(index * 0.37 + 0.2)
+            scale = max(0.85, min(1.15, scale))
+        local = config.track_width * scale
+        if config.track_type == "skidpad":
+            local = 3.0
+        elif variation > 0.0 and config.track_type in {"autocross", "trackdrive"}:
+            local = max(local, 3.0)
+        elif variation > 0.0 and config.track_type in {"acceleration", "ebs"}:
+            local = max(local, 4.9)
+        width_profile.append(local)
+        half = local * 0.5
+        left.append(points[index] + normals[index] * half)
+        right.append(points[index] - normals[index] * half)
     straights = straight_segment_lengths(points, windowed, closed, config.straight_curvature_radius)
     vertices, faces = build_surface(left, right, closed)
     area = signed_area(points)
@@ -761,28 +807,50 @@ def build_track(
         surface_faces=faces,
         centerline_method=method,
         warnings=[*(warnings or []), *direction_note],
+        width_profile=width_profile,
     )
 
 
 def generate_track(config: GeneratorConfig, rng: SeededRNG, limits: ResolvedLimits | None = None) -> TrackData:
-    """Build a track from a supplied centerline, or create a closed loop from the seed."""
-    limits = limits or resolve_limits(config)
+    """Build a track from a supplied centerline, an event, or a closed procedural loop."""
+    from .events import (
+        acceleration_centerline,
+        apply_event_defaults,
+        describe_event,
+        ebs_centerline,
+        prepare_limits,
+        skidpad_centerline,
+    )
+
+    event_notes = apply_event_defaults(config)
+    limits = resolve_limits(config)
+    limits = prepare_limits(config, limits, event_notes)
     # Profile warnings are attached by the validator so they are not listed twice.
     notes: list[str] = []
     if config.centerline:
         if config.track_type != "custom":
-            notes.append("A centerline was supplied, so it was used instead of a procedural loop.")
+            notes.append("A centerline was supplied, so it was used instead of the event generator.")
         points, method, extra = centerline_from_input(config)
         notes.extend(extra)
+    elif config.track_type == "custom":
+        raise ValueError(
+            "Track type 'custom' needs a centerline. Provide coordinates or, in Blender, "
+            "a curve object named FSAE_Input_Centerline."
+        )
+    elif config.track_type == "acceleration":
+        points, method, extra = acceleration_centerline(config)
+        notes.extend(extra)
+    elif config.track_type == "skidpad":
+        points, method, extra = skidpad_centerline(config)
+        notes.extend(extra)
+    elif config.track_type == "ebs":
+        points, method, extra = ebs_centerline(config)
+        notes.extend(extra)
     else:
-        if config.track_type == "custom":
-            raise ValueError(
-                "Track type 'custom' needs a centerline. Provide coordinates or, in Blender, "
-                "a curve object named FSAE_Input_Centerline."
-            )
         points, method, extra = generate_procedural_centerline(config, limits, rng)
         notes.extend(extra)
     track = build_track(points, config, method, notes)
+    describe_event(track, config, event_notes)
     if math.isfinite(track.min_radius):
         track.warnings.append(f"Sharpest centerline radius over a 2 m window is {track.min_radius:.2f} m.")
     return track

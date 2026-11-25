@@ -32,7 +32,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--track-width", type=float, default=3.5)
     parser.add_argument("--cone-spacing", type=float, default=5.0)
-    parser.add_argument("--track-type", default="trackdrive", choices=("trackdrive", "autocross", "custom"))
+    parser.add_argument(
+        "--track-type",
+        default="autocross",
+        choices=("autocross", "acceleration", "skidpad", "ebs", "trackdrive", "custom"),
+    )
     parser.add_argument("--profile", default="us_fsae_driverless_2025")
     parser.add_argument("--density", type=float, default=1.0)
     parser.add_argument("--no-trees", action="store_true")

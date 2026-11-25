@@ -46,6 +46,9 @@ def terrain_bounds(track: TrackData, config: GeneratorConfig) -> tuple[float, fl
     need_d = (max_y - min_y) + 2.0 * margin
     width = need_w if config.terrain_width is None else max(float(config.terrain_width), need_w)
     depth = need_d if config.terrain_depth is None else max(float(config.terrain_depth), need_d)
+    if config.terrain_size and config.terrain_size > 0.0:
+        width = max(width, float(config.terrain_size))
+        depth = max(depth, float(config.terrain_size))
     center_x = (min_x + max_x) * 0.5
     center_y = (min_y + max_y) * 0.5
     return (
@@ -239,13 +242,21 @@ def _place_paddock(placer: _Placer, track: TrackData, config: GeneratorConfig, r
         return
     lot = asphalt_lot_bounds(track, config)
     tangent = track.tangents[0].normalized()
-    origin = track.centerline[0] + tangent * 12.0
     normal = track.left_normals[0].normalized()
+    if track.closed:
+        origin = track.centerline[0] + tangent * 12.0
+    else:
+        # Straights and the skidpad are small. Keep the paddock outside the course box.
+        box_min_x, box_min_y, box_max_x, box_max_y = bounding_box(track.centerline)
+        origin = Vec2(box_max_x + track.width + 10.0, (box_min_y + box_max_y) * 0.5)
+        tangent = Vec2(0.0, 1.0)
+        normal = Vec2(1.0, 0.0)
     prop_density = config.env_density * config.background_density
     fence_count = scaled_count(config.num_barriers, 16, config.env_density) if config.enable_barriers else 0
     tent_count = scaled_count(config.num_tents, 6, config.env_density) if config.enable_tents else 0
     spectator_count = scaled_count(config.num_spectators, 18, config.env_density) if config.enable_spectators else 0
-    vehicle_count = scaled_count(None, 4, prop_density) if config.enable_buildings else 0
+    want_vehicles = config.enable_buildings and (config.enable_vans or config.enable_trailers)
+    vehicle_count = scaled_count(None, 4, prop_density) if want_vehicles else 0
     if fence_count == 0 and tent_count == 0 and spectator_count == 0 and vehicle_count == 0:
         return
 
@@ -332,7 +343,10 @@ def _place_paddock(placer: _Placer, track: TrackData, config: GeneratorConfig, r
     if vehicle_count > 0:
         vehicle_rng = rng.child("env-buildings")
         for index in range(vehicle_count):
-            asset = "trailer" if index == vehicle_count - 1 and vehicle_count > 1 else "van"
+            if config.enable_trailers and (not config.enable_vans or index == vehicle_count - 1):
+                asset = "trailer"
+            else:
+                asset = "van"
             point = anchor_point + outward * 12.5 + tangent * (index * 7.2)
             placer.place_exact(
                 point,
@@ -411,8 +425,12 @@ def generate_environment(
                 config.barrier_clearance,
                 tries=20,
             )
-        for _ in range(scaled_count(None, 3, prop_density)):
-            placer.place(prop_rng, "equipment", "Environment/Props", "equipment", config.prop_clearance, tries=15)
+        if config.enable_paddock_equipment:
+            for _ in range(scaled_count(None, 3, prop_density)):
+                placer.place(prop_rng, "equipment", "Environment/Props", "equipment", config.prop_clearance, tries=15)
+        if config.enable_background_vehicles and config.enable_vans:
+            for _ in range(scaled_count(None, 2, prop_density)):
+                placer.place(prop_rng, "van", "Environment/Buildings", "van", config.prop_clearance, tries=12)
         for _ in range(scaled_count(None, 4, prop_density)):
             placer.place(
                 prop_rng,

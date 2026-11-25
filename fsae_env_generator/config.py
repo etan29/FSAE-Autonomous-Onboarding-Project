@@ -137,6 +137,38 @@ class GeneratorConfig:
     corner_spacing_factor: float = 0.65
     corner_radius_threshold: float = 18.0
     cone_placement_variation: float = 0.0
+    # Tight-corner gap. 2 m matches the previous corner floor. The sidebar can set 2–3 m.
+    corner_cone_spacing: float = 2.0
+    # Lateral cone jitter. Zero keeps every cone on the boundary heading.
+    cone_jitter_m: float = 0.0
+    # 0 means "fit the track plus terrain_margin". A positive value is a minimum side length.
+    terrain_size: float = 0.0
+    acceleration_length: float = 75.0
+    # 0 selects the event default (75 m acceleration exit, 30 m autocross, 25 m skidpad, EBS rest).
+    stopping_zone_length: float = 0.0
+    stopping_zone_width: float = 0.0
+    skidpad_entry_length: float = 15.0
+    skidpad_exit_length: float = 25.0
+    skidpad_inner_count: int = 17
+    skidpad_outer_count: int = 13
+    autocross_min_length: float = 200.0
+    autocross_max_length: float = 500.0
+    max_corner_radius: float = 30.0
+    s_curve_frequency: float = 0.9
+    chicane_frequency: float = 0.75
+    hairpin_frequency: float = 0.0
+    slalom_frequency: float = 0.0
+    track_width_variation: float = 0.0
+    complexity: float | None = None
+    ebs_approach_length: float = 15.0
+    ebs_accel_length: float = 20.0
+    ebs_stop_length: float = 8.5
+    ebs_rest_length: float = 10.0
+    enable_vans: bool = True
+    enable_trailers: bool = True
+    enable_timing_structures: bool = True
+    enable_background_vehicles: bool = True
+    enable_paddock_equipment: bool = True
     terrain_margin: float = 42.0
     terrain_width: float | None = None
     terrain_depth: float | None = None
@@ -173,20 +205,20 @@ class GeneratorConfig:
             raise ValueError(f"Unknown rules profile '{self.rules_profile}'. Known profiles: {known}") from exc
 
     def wants_closed_loop(self) -> bool:
-        if self.closed_loop is None:
-            return True
-        return bool(self.closed_loop)
+        if self.closed_loop is not None:
+            return bool(self.closed_loop)
+        return self.track_type not in {"acceleration", "skidpad", "ebs"}
 
     def wants_entry_exit(self) -> bool:
-        """Autocross draws entry and exit lanes unless the user turns them off.
+        """Side entry/exit corridors are off unless `enable_entry_exit` is set.
 
-        Trackdrive and custom tracks do not, unless `enable_entry_exit` is set.
-        The lanes are a short orange-coned corridor beside the start straight,
-        not a second copy of the racing line. See docs/assumptions.md.
+        Driverless autocross stops on the track after the finish (DD.4.4.4).
+        It does not add a second orange corridor. Set `enable_entry_exit` to
+        draw that older corridor anyway.
         """
         if self.enable_entry_exit is not None:
             return bool(self.enable_entry_exit)
-        return self.track_type == "autocross"
+        return False
 
 
 @dataclass
@@ -223,9 +255,10 @@ def resolve_limits(config: GeneratorConfig) -> ResolvedLimits:
     """Merge the profile, explicit overrides, and generator defaults."""
     profile = config.profile()
     warnings: list[str] = []
-    if config.track_type not in {"autocross", "trackdrive", "custom"}:
+    if config.track_type not in {"autocross", "trackdrive", "custom", "acceleration", "skidpad", "ebs"}:
         raise ValueError(
-            f"Unknown track type '{config.track_type}'. Use autocross, trackdrive, or custom."
+            f"Unknown track type '{config.track_type}'. "
+            "Use autocross, acceleration, skidpad, ebs, trackdrive, or custom."
         )
     if config.track_width <= 0.0 or config.cone_spacing <= 0.0:
         raise ValueError("Track width and cone spacing must be positive.")
@@ -338,3 +371,61 @@ def config_to_json(config: GeneratorConfig) -> str:
 
 def config_from_json(text: str) -> GeneratorConfig:
     return config_from_dict(json.loads(text))
+
+
+def event_defaults(track_type: str) -> dict[str, float]:
+    """Sidebar values applied when the event dropdown changes.
+
+    These match the 2026 rules where a number is published, and the labeled
+    simulation defaults otherwise. `stopping_zone_length` of 0 means the
+    generator fills the event default.
+    """
+    if track_type == "acceleration":
+        return {
+            "track_width": 4.9,
+            "cone_spacing": 6.0,
+            "corner_cone_spacing": 6.0,
+            "stopping_zone_length": 75.0,
+            "stopping_zone_width": 4.9,
+            "cone_jitter_m": 0.0,
+        }
+    if track_type == "skidpad":
+        return {
+            "track_width": 3.0,
+            "cone_spacing": 5.0,
+            "corner_cone_spacing": 3.0,
+            "stopping_zone_length": 25.0,
+            "stopping_zone_width": 3.0,
+            "cone_jitter_m": 0.0,
+        }
+    if track_type == "ebs":
+        return {
+            "track_width": 4.9,
+            "cone_spacing": 6.0,
+            "corner_cone_spacing": 6.0,
+            "stopping_zone_length": 10.0,
+            "stopping_zone_width": 4.9,
+            "cone_jitter_m": 0.0,
+        }
+    return {
+        "track_width": 3.5,
+        "cone_spacing": 5.0,
+        "corner_cone_spacing": 2.0,
+        "stopping_zone_length": 30.0,
+        "stopping_zone_width": 3.5,
+        "cone_jitter_m": 0.0,
+    }
+
+
+def event_description(track_type: str) -> str:
+    if track_type == "acceleration":
+        return "Acceleration: 75 m timed straight, then a 75 m exit lane. D.9.1 and DD.4.2."
+    if track_type == "skidpad":
+        return "Skidpad: figure eight, 18.25 m centers, 3.0 m path. D.10.1 and DD.4.3."
+    if track_type == "ebs":
+        return "EBS brake test: inspection straight, not a scored event. DI.2.2."
+    if track_type == "custom":
+        return "Custom: uses the FSAE_Input_Centerline curve."
+    if track_type == "trackdrive":
+        return "Trackdrive uses the same layout limits as autocross (DD.4.4.1)."
+    return "Autocross: one closed lap, centerline arc length 200–500 m. DD.4.4."

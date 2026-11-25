@@ -13,7 +13,8 @@ from .assets import SURFACE_MATERIALS, build_asset_library
 from .config import GeneratorConfig, config_to_dict, resolve_limits
 from .cones import NameSequence, generate_cones
 from .environment import generate_environment as generate_surroundings
-from .environment import terrain_bounds, terrain_mesh
+from .environment import terrain_bounds
+from .ground_truth import build_ground_truth
 from .tarmac import build_tarmac
 from .math2d import Vec2
 from .models import MeshData, PlacedObject, UniqueMesh
@@ -77,6 +78,7 @@ class GeneratedEnvironment:
     label_position: tuple[float, float, float]
     terrain_bounds: tuple[float, float, float, float]
     warnings: list[str] = field(default_factory=list)
+    ground_truth: dict = field(default_factory=dict)
 
     def signature(self) -> list[tuple]:
         rows = scene_signature(self.track, self.objects)
@@ -170,9 +172,10 @@ def _camera(track: TrackData, rng: SeededRNG, bounds: tuple[float, float, float,
 def assemble_environment(config: GeneratorConfig) -> GeneratedEnvironment:
     """Create one environment. Callers that need a report should use `generate_environment`."""
     profile = config.profile()
-    limits = resolve_limits(config)
     rng = SeededRNG(int(config.seed))
-    track = generate_track(config, rng, limits)
+    # generate_track applies event defaults first. Resolve limits after that so cone spacing matches.
+    track = generate_track(config, rng)
+    limits = resolve_limits(config)
     names = NameSequence()
     cones, markings, cone_warnings = generate_cones(track, profile, config, limits, rng, names)
     surroundings, prop_meshes, env_warnings = generate_surroundings(track, cones, config, rng, names)
@@ -182,17 +185,20 @@ def assemble_environment(config: GeneratorConfig) -> GeneratedEnvironment:
     lot_meshes = build_tarmac(track, config, rng)
     if surface_material != "asphalt":
         for mesh in lot_meshes:
-            if mesh.name == "FSAE_Track_Surface":
+            if mesh.name == "FSAE_Terrain":
                 mesh.mesh.material_slots = [surface_material]
-    unique = [terrain_mesh(bounds), *lot_meshes, *markings, *prop_meshes]
+                mesh.mesh.vertex_colors = None
+    unique = [*lot_meshes, *markings, *prop_meshes]
     lighting, light_note = _lighting(config, rng)
     warnings = [*cone_warnings, *env_warnings]
     if light_note:
         warnings.append(light_note)
     min_x, min_y, max_x, max_y = bounds
     label = f"{profile.name}\n{profile.revision}"
+    stored_config = config_to_dict(config)
+    truth = build_ground_truth(track, [*cones, *surroundings], stored_config)
     return GeneratedEnvironment(
-        config=config_to_dict(config),
+        config=stored_config,
         seed=int(config.seed),
         profile_id=profile.id,
         profile_name=profile.name,
@@ -208,6 +214,7 @@ def assemble_environment(config: GeneratorConfig) -> GeneratedEnvironment:
         label_position=(min_x + 1.0, max_y - 1.0, 0.2),
         terrain_bounds=bounds,
         warnings=warnings,
+        ground_truth=truth,
     )
 
 

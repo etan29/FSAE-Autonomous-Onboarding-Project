@@ -14,9 +14,11 @@ Edit the JSON files in `fsae_env_generator/profiles/` to change a profile. Do no
 
 Track width is the distance between the inner edges of the cone bases. The boundary polylines are those inner edges, offset from the centerline by half the width. Each cone's center is moved outward by half its base width, so the inner face of the base sits on the boundary and the cone body is outside the asphalt.
 
-## Closed loop, autocross, and trackdrive
+## Events
 
-Both procedural track types are closed loops. Autocross also builds a straight orange-coned entry/exit corridor beside the start straight, offset outside the right boundary. It is not a second racing line. Trackdrive does not build that corridor unless `enable_entry_exit` is set. The start/finish gate is placed at the beginning of the longest straight.
+The sidebar builds four 2026 courses: Acceleration, Skidpad, Autocross, and the EBS brake test. Official dimensions are cited in the ground-truth file. Lengths the rulebooks do not publish (EBS approach, the Remote Stop coordinate, and any corridor past 8.5 m) are labeled assumptions there. See `docs/iteration3.md`.
+
+Autocross and trackdrive are closed loops. The stopping zone is the first part of the lap after the finish, on the same centerline. A separate orange entry/exit corridor is drawn only when `enable_entry_exit` is set. The start/finish gate is placed at the beginning of the longest straight.
 
 A custom track reads coordinates, or in Blender the curve object `FSAE_Input_Centerline`. Generate reads that curve again. Regenerate rebuilds the stored result, including the curve points saved with it.
 
@@ -28,7 +30,7 @@ The procedural centerline starts from a rounded loop or, when it still meets the
 
 ## Cone spacing
 
-Straight spacing is `cone_spacing`. In corners the gap shrinks toward `corner_spacing_factor` times that value (default 0.65) once the local radius drops below `corner_radius_threshold` (default 18 m). The general specification asks for tighter corner spacing on every profile. The Formula Student profile additionally refuses a gap above 5 m.
+Straight spacing is `cone_spacing`. In corners the gap shrinks toward `corner_cone_spacing` (default 2 m) once the local radius drops below `corner_radius_threshold` (default 18 m). The Formula Student profile additionally refuses a gap above 5 m.
 
 ## Stripes
 

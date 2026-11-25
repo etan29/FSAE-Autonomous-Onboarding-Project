@@ -13,6 +13,7 @@ class MeshData:
     faces: list[tuple[int, ...]]
     material_slots: list[str]
     face_materials: list[int]
+    vertex_colors: list[tuple[float, float, float, float]] | None = None
 
 
 @dataclass

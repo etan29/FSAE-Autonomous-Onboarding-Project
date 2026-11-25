@@ -74,7 +74,7 @@ class SceneTests(unittest.TestCase):
         self.assertEqual(sum(1 for obj in first.objects if obj.role == "lane_cone"), 0)
 
     def test_autocross_adds_orange_lanes_and_density_zero_skips_props(self) -> None:
-        autocross = assemble_environment(GeneratorConfig(seed=5, track_type="autocross"))
+        autocross = assemble_environment(GeneratorConfig(seed=5, track_type="autocross", enable_entry_exit=True))
         lanes = [obj for obj in autocross.objects if obj.role == "lane_cone"]
         self.assertGreaterEqual(len(lanes), 4)
         self.assertTrue(all(obj.asset == "orange_small" for obj in lanes))
@@ -121,14 +121,19 @@ class SceneTests(unittest.TestCase):
         self.assertTrue(any(abs(obj.pitch) > 1e-4 or abs(obj.roll) > 1e-4 for obj in cones))
         self.assertTrue(all(abs(obj.pitch) <= math.radians(1.5) + 1e-6 for obj in cones))
         names = {mesh.name for mesh in environment.unique_meshes}
-        self.assertIn("FSAE_Track_Surface", names)
-        self.assertIn("FSAE_Grass_Berms", names)
+        self.assertIn("FSAE_Terrain", names)
+        self.assertNotIn("FSAE_Left_Boundary", names)
+        self.assertNotIn("FSAE_Right_Boundary", names)
         self.assertIn("FSAE_Skid_Marks", names)
         self.assertIn("FSAE_Distractor_Paint", names)
         self.assertIn("FSAE_Timing_Arch", names)
-        surface = next(mesh for mesh in environment.unique_meshes if mesh.name == "FSAE_Track_Surface")
+        surface = next(mesh for mesh in environment.unique_meshes if mesh.name == "FSAE_Terrain")
         xs = [vertex[0] for vertex in surface.mesh.vertices]
+        zs = [vertex[2] for vertex in surface.mesh.vertices]
         self.assertGreater(max(xs) - min(xs), environment.track.width * 8.0)
+        self.assertTrue(any(abs(z) < 1e-6 for z in zs))
+        self.assertTrue(any(z > 0.02 for z in zs))
+        self.assertIsNotNone(surface.mesh.vertex_colors)
 
     def test_collections_are_assigned_on_every_object(self) -> None:
         environment = assemble_environment(GeneratorConfig(seed=2, track_type="autocross"))

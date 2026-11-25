@@ -7,6 +7,7 @@ SAE track dimensions.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from .assets import footprint_of, mesh_aabb
@@ -144,20 +145,30 @@ def _widths(track: TrackData) -> list[float]:
     ]
 
 
-def _boundary_gaps(objects: list[PlacedObject], side: str) -> list[float]:
-    cones = [
-        obj
-        for obj in objects
-        if obj.role == "boundary_cone" and obj.metadata.get("side") == side
-    ]
+def _one_ring_gaps(cones: list[PlacedObject]) -> list[float]:
     if len(cones) < 2:
         return []
     cones.sort(key=lambda obj: float(obj.metadata.get("station_m", 0.0)))
     total = float(cones[0].metadata.get("boundary_length_m", 0.0))
     stations = [float(obj.metadata["station_m"]) for obj in cones]
     gaps = [stations[index + 1] - stations[index] for index in range(len(stations) - 1)]
-    if total > stations[-1]:
+    if total > stations[-1] + 1e-6:
         gaps.append(total - stations[-1] + stations[0])
+    return gaps
+
+
+def _boundary_gaps(objects: list[PlacedObject], side: str) -> list[float]:
+    cones = [
+        obj
+        for obj in objects
+        if obj.role == "boundary_cone" and obj.metadata.get("side") == side
+    ]
+    groups: dict[str, list[PlacedObject]] = {}
+    for obj in cones:
+        groups.setdefault(str(obj.metadata.get("ring", "main")), []).append(obj)
+    gaps: list[float] = []
+    for group in groups.values():
+        gaps.extend(_one_ring_gaps(group))
     return gaps
 
 
@@ -214,6 +225,92 @@ def _environment_collision_count(track: TrackData, objects: list[PlacedObject]) 
     return violations
 
 
+def _event_checks(add, track: TrackData, objects: list[PlacedObject], config: GeneratorConfig, metrics: PathMetrics) -> None:
+    """Rule checks that the generic lap-length test does not cover."""
+    kind = config.track_type
+    if kind == "acceleration":
+        add(
+            "event",
+            "Acceleration timed length is 75 m",
+            abs(track.timed_length - 75.0) <= 0.05,
+            f"Timed length {track.timed_length:.2f} m (D.9.1.1). Total centerline {metrics.length:.2f} m includes the exit lane.",
+        )
+        target = 75.0 + config.stopping_zone_length
+        add(
+            "event",
+            "Acceleration exit lane follows the finish",
+            abs(metrics.length - target) <= max(1.0, config.sample_spacing * 2.0),
+            f"Expected {target:.2f} m (75 m timed plus {config.stopping_zone_length:.2f} m exit, DD.4.2.4).",
+        )
+    elif kind == "skidpad":
+        xs = [point.x for point in track.centerline]
+        near = sum(1 for point in track.centerline if point.length() < 1.0)
+        add(
+            "event",
+            "Skidpad is one figure eight",
+            bool(xs) and min(xs) < -8.0 and max(xs) > 8.0 and near >= 2,
+            "The centerline reaches both circles and passes through the shared crossover.",
+        )
+        rings = {
+            "right-inner": 17,
+            "left-inner": 17,
+            "right-outer": 13,
+            "left-outer": 13,
+        }
+        counts = {ring: sum(1 for obj in objects if obj.metadata.get("ring") == ring) for ring in rings}
+        count_ok = all(counts[ring] == expected for ring, expected in rings.items())
+        add(
+            "event",
+            "Skidpad cone counts match 2026",
+            count_ok,
+            f"Inner 17 and outer 13 per circle (DD.4.3.1, D.10.1.2). Counts: {counts}.",
+        )
+        add(
+            "event",
+            "Skidpad timed length is two timed laps",
+            abs(track.timed_length - 2.0 * 2.0 * math.pi * 9.125) < 0.05,
+            f"Timed length {track.timed_length:.2f} m is the second right lap plus the second left lap.",
+        )
+    elif kind == "ebs":
+        info = track.event_metrics or {}
+        stop = float(info.get("emergency_stop_length_m", 0.0))
+        accel = float(info.get("accel_length_m", 0.0))
+        add(
+            "event",
+            "EBS emergency stop is at most 8.5 m",
+            0.5 < stop <= 8.5 + 1e-6,
+            f"Emergency region {stop:.2f} m (DI.2.2.2).",
+        )
+        add(
+            "event",
+            "EBS acceleration zone is at most 20 m",
+            0.5 < accel <= 20.0 + 1e-6,
+            f"Acceleration zone {accel:.2f} m (DI.2.2.2, distance to reach 40 km/h).",
+        )
+        text = " ".join(track.assumptions).lower()
+        add(
+            "event",
+            "EBS unpublished lengths are labeled assumptions",
+            "assumption" in text and info.get("scored_event") is False,
+            "Approach length, trigger coordinate, rest corridor, and width are assumptions. EBS is not a scored event.",
+        )
+    elif kind == "autocross":
+        arc_ok = 200.0 - config.length_tolerance <= metrics.length <= 500.0 + config.length_tolerance
+        add(
+            "event",
+            "Autocross centerline arc length is 200-500 m",
+            arc_ok,
+            f"Arc length {metrics.length:.2f} m (DD.4.4.1). This is the polyline length, not the bounding box.",
+        )
+        zone = track.stopping_zone or {}
+        add(
+            "event",
+            "Autocross stopping zone stays on the track",
+            bool(zone.get("on_track")) and float(zone.get("length_m", 0.0)) <= 30.0 + 1e-6,
+            "DD.4.4.4: stop in 30 m or less on the track after the finish.",
+        )
+
+
 def validate_environment(
     track: TrackData,
     objects: list[PlacedObject],
@@ -241,6 +338,11 @@ def validate_environment(
         config.sample_spacing,
     )
     widths = _widths(track)
+    if config.track_type == "skidpad" and widths:
+        # The figure-eight crossover is a single shared point. Width samples on top of it are not the 3 m path.
+        kept = [widths[index] for index, point in enumerate(track.centerline) if point.length() > 2.5]
+        if kept:
+            widths = kept
     width_mean = sum(widths) / len(widths) if widths else 0.0
     width_min = min(widths) if widths else 0.0
     width_max = max(widths) if widths else 0.0
@@ -283,9 +385,12 @@ def validate_environment(
         add("track", "Boundaries do not self-intersect", False, "An offset boundary crosses itself.")
     else:
         add("track", "Boundaries do not self-intersect", True, "Left and right boundaries do not cross themselves.")
-    width_ok = abs(width_mean - config.track_width) <= config.track_width_tolerance and (
+    width_tolerance = config.track_width_tolerance
+    if config.track_width_variation > 0.0:
+        width_tolerance = max(width_tolerance, config.track_width * config.track_width_variation * 1.25)
+    width_ok = abs(width_mean - config.track_width) <= width_tolerance and (
         width_max - width_min
-    ) <= config.track_width_tolerance
+    ) <= width_tolerance
     add(
         "track",
         "Track width matches the request",
@@ -317,15 +422,30 @@ def validate_environment(
             f"(tolerance {config.min_radius_tolerance:.2f} m)."
         ),
     )
-    add(
-        "track",
-        "Straight sections respect the maximum length",
-        metrics.max_straight <= limits.max_straight + config.straight_length_tolerance,
-        f"{limits.max_straight_source}. Maximum {limits.max_straight:.1f} m, measured {metrics.max_straight:.2f} m.",
-    )
-    length_applies = config.centerline is None
+    if config.track_type in {"acceleration", "ebs"}:
+        add(
+            "track",
+            "Straight sections respect the maximum length",
+            True,
+            "The 80 m straight cap is DD.4.4.1 (driverless autocross). It is not applied to this straight-line event.",
+        )
+    else:
+        add(
+            "track",
+            "Straight sections respect the maximum length",
+            metrics.max_straight <= limits.max_straight + config.straight_length_tolerance,
+            f"{limits.max_straight_source}. Maximum {limits.max_straight:.1f} m, measured {metrics.max_straight:.2f} m.",
+        )
+    length_applies = config.centerline is None and config.track_type not in {"acceleration", "skidpad", "ebs"}
     length_ok = limits.length_min - config.length_tolerance <= metrics.length <= limits.length_max + config.length_tolerance
-    if length_applies:
+    if config.track_type in {"acceleration", "skidpad", "ebs"}:
+        add(
+            "track",
+            "Track length is within the target range",
+            True,
+            f"This event is not a 200–500 m autocross lap. Centerline arc length is {metrics.length:.2f} m.",
+        )
+    elif length_applies:
         add(
             "track",
             "Track length is within the target range",
@@ -516,6 +636,7 @@ def validate_environment(
         len(below_ground) == 0,
         f"{len(below_ground)} object(s) have a negative height.",
     )
+    _event_checks(add, track, objects, config, metrics)
     if reproducible is None:
         add("reproducibility", "Identical inputs repeat", True, "Reproducibility was not compared on this call.")
     else:

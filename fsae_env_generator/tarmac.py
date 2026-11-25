@@ -178,7 +178,7 @@ def _skid_mesh(track: TrackData, rng: SeededRNG) -> UniqueMesh:
                 normal = direction.left_normal().normalized()
                 offset = rng.choice((-1.0, 1.0)) * rng.uniform(0.35, 1.05)
                 width = rng.uniform(0.12, 0.28)
-                _quad_strip(vertices, faces, materials, start + normal * offset, end + normal * offset, width, 0.012, 0)
+                _quad_strip(vertices, faces, materials, start + normal * offset, end + normal * offset, width, 0.004, 0)
         distance += rng.uniform(2.5, 7.0)
     return UniqueMesh(
         name="FSAE_Skid_Marks",
@@ -197,10 +197,10 @@ def _parking_lines(origin: Vec2, yaw: float, stalls: int) -> tuple[list, list, l
     stall_d = 5.0
     for index in range(stalls + 1):
         start = origin + side * (index * stall_w)
-        _quad_strip(vertices, faces, materials, start, start + forward * stall_d, 0.1, 0.02, 0)
+        _quad_strip(vertices, faces, materials, start, start + forward * stall_d, 0.1, 0.005, 0)
     back = origin + forward * stall_d
-    _quad_strip(vertices, faces, materials, origin, origin + side * (stalls * stall_w), 0.1, 0.02, 0)
-    _quad_strip(vertices, faces, materials, back, back + side * (stalls * stall_w), 0.1, 0.02, 0)
+    _quad_strip(vertices, faces, materials, origin, origin + side * (stalls * stall_w), 0.1, 0.005, 0)
+    _quad_strip(vertices, faces, materials, back, back + side * (stalls * stall_w), 0.1, 0.005, 0)
     return vertices, faces, materials
 
 
@@ -214,7 +214,7 @@ def _arc_lines(center: Vec2, radius: float, start: float, sweep: float, width: f
         angle = start + sweep * step / steps
         point = center + Vec2(math.cos(angle), math.sin(angle)) * radius
         if previous is not None:
-            _quad_strip(vertices, faces, materials, previous, point, width, 0.02, slot)
+            _quad_strip(vertices, faces, materials, previous, point, width, 0.005, slot)
         previous = point
     return vertices, faces, materials
 
@@ -297,20 +297,87 @@ def _timing_arch(track: TrackData) -> UniqueMesh:
     )
 
 
+def _lerp_color(a: tuple[float, float, float], b: tuple[float, float, float], t: float) -> tuple[float, float, float, float]:
+    t = max(0.0, min(1.0, t))
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, 1.0)
+
+
+def _continuous_ground(track: TrackData, bounds: tuple[float, float, float, float], rng: SeededRNG) -> UniqueMesh:
+    """One mesh: flat asphalt on the course, then gravel, then grass. Relief stays off the driving line."""
+    min_x, min_y, max_x, max_y = bounds
+    span = max(max_x - min_x, max_y - min_y)
+    step = 4.0 if span < 220.0 else 6.0
+    xs: list[float] = []
+    x = min_x
+    while x < max_x - 1e-6:
+        xs.append(x)
+        x += step
+    xs.append(max_x)
+    ys: list[float] = []
+    y = min_y
+    while y < max_y - 1e-6:
+        ys.append(y)
+        y += step
+    ys.append(max_y)
+    samples = track.centerline[::2] or track.centerline
+    phase = rng.child("terrain-relief").uniform(0.0, 20.0)
+    asphalt = (0.07, 0.07, 0.075)
+    gravel = (0.34, 0.31, 0.26)
+    grass = (0.16, 0.38, 0.12)
+    flat_limit = track.width * 0.5 + 3.0
+    vertices: list[tuple[float, float, float]] = []
+    colors: list[tuple[float, float, float, float]] = []
+    for y_value in ys:
+        for x_value in xs:
+            point = Vec2(x_value, y_value)
+            distance = min(point.distance(sample) for sample in samples) if samples else 0.0
+            noise = 0.5 + 0.5 * math.sin(x_value * 0.23 + phase) * math.cos(y_value * 0.19 + phase * 0.3)
+            if distance <= flat_limit:
+                z = 0.0
+                color = (asphalt[0], asphalt[1], asphalt[2], 1.0)
+            elif distance <= flat_limit + 6.0:
+                blend = (distance - flat_limit) / 6.0
+                z = (0.03 + 0.05 * noise) * blend
+                color = _lerp_color(asphalt, gravel, blend)
+            else:
+                blend = min(1.0, (distance - flat_limit - 6.0) / 12.0)
+                z = 0.08 + 0.22 * noise * (0.35 + 0.65 * blend)
+                color = _lerp_color(gravel, grass, blend)
+            vertices.append((x_value, y_value, z))
+            colors.append(color)
+    columns = len(xs)
+    faces: list[tuple[int, ...]] = []
+    for row in range(len(ys) - 1):
+        for column in range(columns - 1):
+            base = row * columns + column
+            faces.append((base, base + 1, base + columns + 1, base + columns))
+    mesh = MeshData(
+        vertices=vertices,
+        faces=faces,
+        material_slots=["ground_blend"],
+        face_materials=[0] * len(faces),
+        vertex_colors=colors,
+    )
+    return UniqueMesh(name="FSAE_Terrain", collection="Environment/Terrain", mesh=mesh)
+
+
 def build_tarmac(
     track: TrackData,
     config: GeneratorConfig,
     rng: SeededRNG,
 ) -> list[UniqueMesh]:
-    """Asphalt sheet, berms, skid marks, distractor paint, and the timing arch."""
+    """Continuous ground, skid marks, distractor paint, and the timing arch.
+
+    The driving surface is the flat part of the ground mesh. Blue and yellow
+    boundary curves are not created; the cones are the visible boundaries.
+    """
     bounds = terrain_bounds(track, config)
     lot = asphalt_lot_bounds(track, config)
     meshes = [
-        _asphalt_mesh(lot),
-        _berm_mesh(bounds, lot),
+        _continuous_ground(track, bounds, rng),
         _skid_mesh(track, rng.child("skid-marks")),
         _paint_mesh(lot, track, rng.child("distractor-paint")),
     ]
-    if config.enable_start_finish and track.centerline:
+    if config.enable_start_finish and config.enable_timing_structures and track.centerline:
         meshes.append(_timing_arch(track))
     return meshes

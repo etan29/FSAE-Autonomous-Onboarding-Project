@@ -19,6 +19,7 @@ MATERIAL_RGBA: dict[str, tuple[float, float, float, float]] = {
     "cone_white": (0.95, 0.95, 0.95, 1.0),
     "cone_black": (0.015, 0.015, 0.015, 1.0),
     "asphalt": (0.025, 0.025, 0.028, 1.0),
+    "ground_blend": (0.12, 0.16, 0.1, 1.0),
     "concrete": (0.45, 0.45, 0.46, 1.0),
     "asphalt_dark": (0.012, 0.012, 0.014, 1.0),
     "start_line": (0.92, 0.92, 0.92, 1.0),
@@ -381,9 +382,15 @@ def _van() -> MeshData:
     materials: list[int] = []
     _box(vertices, faces, materials, (0.0, 0.0, 1.05), (5.4, 2.05, 1.7), 0)
     _box(vertices, faces, materials, (1.55, 0.0, 1.35), (1.5, 1.9, 0.85), 1)
+    _box(vertices, faces, materials, (0.85, 1.02, 0.85), (1.1, 0.04, 0.9), 3)
     for wx, wy in ((-1.7, 0.95), (1.6, 0.95), (-1.7, -0.95), (1.6, -0.95)):
         _box(vertices, faces, materials, (wx, wy, 0.32), (0.55, 0.22, 0.55), 2)
-    return _finish(vertices, faces, materials, ["car_body", "glass", "tire"])
+        _box(vertices, faces, materials, (wx, wy * 0.82, 0.62), (0.7, 0.16, 0.18), 2)
+    _box(vertices, faces, materials, (2.62, 0.62, 0.72), (0.08, 0.22, 0.16), 4)
+    _box(vertices, faces, materials, (2.62, -0.62, 0.72), (0.08, 0.22, 0.16), 4)
+    _box(vertices, faces, materials, (-2.62, 0.62, 0.78), (0.08, 0.2, 0.14), 5)
+    _box(vertices, faces, materials, (-2.62, -0.62, 0.78), (0.08, 0.2, 0.14), 5)
+    return _finish(vertices, faces, materials, ["car_body", "glass", "tire", "car_body", "cone_white", "cone_orange"])
 
 
 def _trailer() -> MeshData:
@@ -392,9 +399,12 @@ def _trailer() -> MeshData:
     materials: list[int] = []
     _box(vertices, faces, materials, (-0.3, 0.0, 1.35), (6.2, 2.3, 2.2), 0)
     _box(vertices, faces, materials, (3.3, 0.0, 0.55), (1.4, 0.12, 0.12), 1)
+    _box(vertices, faces, materials, (0.4, 1.16, 1.7), (1.4, 0.04, 0.55), 3)
     for wx, wy in ((-1.5, 1.05), (0.7, 1.05), (-1.5, -1.05), (0.7, -1.05)):
         _box(vertices, faces, materials, (wx, wy, 0.34), (0.5, 0.24, 0.55), 2)
-    return _finish(vertices, faces, materials, ["building", "pole", "tire"])
+    _box(vertices, faces, materials, (-3.3, 0.7, 0.9), (0.08, 0.18, 0.12), 4)
+    _box(vertices, faces, materials, (-3.3, -0.7, 0.9), (0.08, 0.18, 0.12), 4)
+    return _finish(vertices, faces, materials, ["building", "pole", "tire", "glass", "cone_orange"])
 
 
 def _building() -> MeshData:
